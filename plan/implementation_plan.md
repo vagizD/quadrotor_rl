@@ -89,18 +89,26 @@ project_root/
 |-- implementation_plan.md
 |
 |-- src/
+|   |-- common/
+|   |   |-- __init__.py
+|   |   |-- types.py
 |   |-- geometry/
 |   |   |-- __init__.py
 |   |   |-- rotation.py
 |   |
 |   |-- simulation/
 |   |   |-- __init__.py
-|   |   |-- integrators.py
+|   |   |-- integrators/
+|   |       |-- __init__.py
+|   |       |-- _common.py
+|   |       |-- euler.py
+|   |       |-- rk4.py
 |   |
 |   |-- robots/
 |   |   |-- __init__.py
 |   |   |-- quadrotor/
 |   |       |-- __init__.py
+|   |       |-- model.py
 |   |       |-- state.py
 |   |       |-- params.py
 |   |       |-- motors.py
@@ -145,6 +153,8 @@ project_root/
 |   |-- test_dynamics.py
 |   |-- test_integrators.py
 |   |-- test_quadrotor_hover_environment.py
+|   |-- physics/
+|       |-- test_quadrotor_scenarios.py
 |
 |-- runs/
     |-- <experiment_name>/
@@ -161,11 +171,17 @@ Do not create all files immediately. Create files only when their implementation
 
 ## 5. Module Responsibilities
 
+### `common/types.py`
+
+Shared NumPy array type aliases used across the simulator. It contains no runtime physics or
+task logic.
+
 ### `geometry/rotation.py`
 
 Reusable quaternion and rotation mathematics:
 
 ```text
+Quaternion value object (unit by default; `normalize=False` for raw values)
 quaternion normalization
 quaternion multiplication
 quaternion -> rotation matrix
@@ -174,14 +190,17 @@ small rotation helpers if needed
 
 This module must not know anything about quadrotors.
 
-### `simulation/integrators.py`
+### `simulation/integrators/`
 
 Reusable numerical integration:
 
 ```text
-Euler
-fixed-step classical RK4
+EulerIntegrator
+RK4Integrator (fixed-step classical RK4)
 ```
+
+Both integrators expose the same `step(state, derivative_function)` interface and own a fixed
+positive timestep. Their implementations live in separate modules, with only validation shared.
 
 The integrator knows how to advance a dynamical system but does not know what robot is being simulated.
 
@@ -196,6 +215,11 @@ quaternion
 angular velocity
 ```
 
+### `robots/quadrotor/model.py`
+
+Provides the stateful `Quadrotor` façade. It owns parameters, state, and the current thrust
+command, and delegates motor calculations to the pure functions in `motors.py`.
+
 ### `robots/quadrotor/params.py`
 
 Defines the meaning and validation of quadrotor physical parameters:
@@ -206,6 +230,7 @@ arm length
 inertia
 yaw reaction-torque coefficient
 rotor thrust bounds
+motor spin directions
 gravity magnitude if treated as configurable physics
 ```
 
@@ -221,7 +246,8 @@ Maps:
 (total thrust, tau_x, tau_y, tau_z)
 ```
 
-All signs must match `conventions.md`.
+The full torque vector is computed by one pure function. Its yaw component uses the
+`motor_spin_directions` stored in `QuadrotorParams`; the default signs match `conventions.md`.
 
 ### `robots/quadrotor/dynamics.py`
 
@@ -244,6 +270,12 @@ compute reward
 define episodes
 perform RL logic
 ```
+
+The project deliberately provides two access paths: pure functions remain the source of truth
+for testing and future integrator callbacks, while `Quadrotor` methods provide convenient access
+through stored state and parameters. These are façades over one implementation, not duplicated
+physics. The future integrator must use the pure derivative path so RK4 can evaluate temporary
+states without mutating the live `Quadrotor`.
 
 ### `environments/quadrotor/hover.py`
 
@@ -333,6 +365,7 @@ arm_length
 inertia
 yaw_torque_coefficient
 max_thrust
+motor_spin_directions
 
 [simulation]
 dt
@@ -628,18 +661,26 @@ Implement and test:
 T = f1 + f2 + f3 + f4
 ```
 
-## Iteration C2 — Roll and pitch torque
+## Iteration C2 — Full torque mapping
 
-Add lever-arm torques and verify exact signs from `conventions.md`.
-
-## Iteration C3 — Yaw reaction torque
+Combine lever-arm roll/pitch torque and rotor reaction yaw torque in one pure `compute_torque`
+function. Motor spin signs come from `QuadrotorParams` and default to the signs in
+`conventions.md`.
 
 Tests:
 
 ```text
 equal thrusts -> zero yaw torque
 CW/CCW imbalance -> expected yaw sign
+roll/pitch lever-arm signs -> expected torque vector
 ```
+
+## Iteration C3 — Quadrotor model façade
+
+Add a stateful `Quadrotor` object that owns `QuadrotorParams`, `QuadrotorState`, and the current
+thrust command. Its motor methods delegate to the pure functions already tested in `motors.py`.
+
+The pure and stateful APIs are intentionally both retained for future integration and testing.
 
 # Phase D — Translational Dynamics
 
@@ -649,11 +690,17 @@ CW/CCW imbalance -> expected yaw sign
 p_dot = v
 ```
 
+Implement the pure derivative function first and expose it through the `Quadrotor` façade
+without duplicating the calculation.
+
 ## Iteration D2 — Gravity-only acceleration
 
 ```text
 zero thrust -> v_dot = [0,0,-g]
 ```
+
+Implement gravity as a pure world-frame acceleration function and expose it through the
+`Quadrotor` façade.
 
 ## Iteration D3 — Upright thrust
 
@@ -662,9 +709,14 @@ T = mg -> zero vertical acceleration
 T > mg -> positive vertical acceleration
 ```
 
+Implement linear acceleration by rotating the body-frame thrust into the world frame and adding
+gravity. Validate the upright hover and climb cases here; validate tilted thrust in D4.
+
 ## Iteration D4 — Tilted thrust
 
 Known tilt -> expected horizontal acceleration sign.
+
+Verify that positive pitch rotates the body thrust axis toward positive world `x`.
 
 ## Iteration D5 — External force
 
@@ -672,29 +724,38 @@ Known tilt -> expected horizontal acceleration sign.
 delta acceleration = F_ext / m
 ```
 
+Add the optional world-frame external-force contribution to linear acceleration and verify that
+the acceleration delta equals force divided by mass.
+
 # Phase E — Rotational Dynamics
 
-## Iteration E1 — Principal-axis torque response
+## Iteration E1 — Angular acceleration
 
-With zero angular velocity:
+Implement one general angular-acceleration function covering both zero and nonzero angular
+velocity. With zero angular velocity:
 
 ```text
 omega_dot = J^-1 tau
 ```
 
-## Iteration E2 — Full rigid-body cross term
-
-Add:
+For general angular velocity, include:
 
 ```text
 omega x (J omega)
 ```
 
-## Iteration E3 — Quaternion derivative
+Expose the same function through the `Quadrotor` façade; no separate zero-rate function is
+needed.
+
+## Iteration E2 — Quaternion derivative
 
 ```text
 q_dot = 0.5 * q ⊗ [0, omega]
 ```
+
+Implement the pure quaternion derivative using a raw pure quaternion for `[0, omega]`, and
+expose it through the `Quadrotor` façade. Return the derivative as a raw `FloatVector`, not as
+an orientation quaternion.
 
 # Phase F — Full Quadrotor Derivative
 
@@ -711,6 +772,9 @@ omega_dot
 
 All must be evaluated from the same current state/action.
 
+Return the four rates in a `QuadrotorStateDerivative` container. The quaternion rate remains a
+raw four-vector because it is a derivative, not an orientation quaternion.
+
 ## Iteration F2 — Hover equilibrium
 
 With:
@@ -724,11 +788,16 @@ f1 = f2 = f3 = f4 = mg/4
 
 expect approximately zero state derivative.
 
+Verify the complete derivative through both the pure function and the `Quadrotor` façade.
+
 # Phase G — Numerical Integration
 
 ## Iteration G1 — Euler
 
-Test on a trivial known ODE.
+Implement a robot-independent `EulerIntegrator` for flat `FloatVector` states and derivative
+callbacks. The class owns a fixed positive timestep and exposes `step(state, derivative_function)`.
+Validate the derivative shape and test it on a trivial known ODE. `RK4Integrator` will use the
+same interface in G3.
 
 ## Iteration G2 — Euler + quadrotor
 
@@ -739,9 +808,15 @@ short hover
 free fall
 ```
 
+Use the pure vector derivative callback with `EulerIntegrator` and reconstruct a normalized
+`QuadrotorState` after each step. The live `Quadrotor` façade must not be mutated while the
+integrator evaluates the derivative.
+
 ## Iteration G3 — RK4
 
-Implement fixed-step classical RK4 without changing physics.
+Implement a robot-independent `RK4Integrator` with the same fixed-`dt` and `step` interface as
+`EulerIntegrator`. It must use the pure derivative callback for all four intermediate slopes
+without changing the physics.
 
 ## Iteration G4 — Convergence comparison
 
@@ -755,7 +830,13 @@ Euler
 RK4
 ```
 
+Compare Euler and RK4 on a known ODE at all three timesteps and verify decreasing error, with the
+expected first-order and fourth-order convergence behavior.
+
 # Phase H — Simulator Validation
+
+Keep scenario-level physics checks in `tests/physics/`, separate from component unit tests and
+integrator tests. Each test names a physical configuration explicitly.
 
 Required deterministic scenarios:
 

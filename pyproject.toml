@@ -1,0 +1,21 @@
+[project]
+name = "quadrotor-rl"
+version = "0.1.0"
+description = "A pure-RL quadrotor hovering simulator and controller."
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=2.2,<3",
+    "torch>=2.13,<3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9,<10",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.uv]
+package = false
