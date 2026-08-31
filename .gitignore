@@ -1,0 +1,10 @@
+.idea/
+__pycache__/
+.venv/
+
+artifacts/
+runs/
+
+.agents
+.codex
+
