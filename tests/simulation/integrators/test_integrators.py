@@ -1,31 +1,14 @@
 import numpy as np
 import pytest
 
-from geometry.rotation import Quaternion
+from common.dimensions import QDIMS
 from robots.quadrotor import (
     Quadrotor,
-    QuadrotorParams,
     QuadrotorState,
     compute_state_derivative_vector,
 )
 from simulation.integrators import EulerIntegrator, RK4Integrator
-
-
-def make_quadrotor() -> Quadrotor:
-    params = QuadrotorParams(
-        mass=1.0,
-        arm_length=0.2,
-        inertia=np.diag([0.01, 0.01, 0.02]),
-        yaw_torque_coefficient=0.1,
-        max_thrust=5.0,
-    )
-    state = QuadrotorState(
-        position=np.zeros(3),
-        velocity=np.zeros(3),
-        quaternion=Quaternion.identity(),
-        angular_velocity=np.zeros(3),
-    )
-    return Quadrotor(params, state)
+from tests.common import make_quadrotor
 
 
 def advance_quadrotor(
@@ -103,8 +86,12 @@ def test_quadrotor_hover_stays_at_equilibrium(
     integrator_type: type[EulerIntegrator] | type[RK4Integrator],
 ) -> None:
     quadrotor = make_quadrotor()
-    hover_thrust = quadrotor.params.mass * quadrotor.params.gravity / 4.0
-    quadrotor.set_thrusts(np.full(4, hover_thrust))
+    hover_thrust = (
+        quadrotor.params.mass
+        * quadrotor.params.gravity
+        / QDIMS.motor_count
+    )
+    quadrotor.set_thrusts(np.full(QDIMS.motor_count, hover_thrust))
     initial_vector = quadrotor.state.to_vector()
 
     next_state = advance_quadrotor(
@@ -136,7 +123,7 @@ def test_quadrotor_free_fall_matches_integrator(
     # p_z = -g * dt² * N² / 2
     # p_t = 1/2 * a * total_time² = 1/2 * a * (dt * N)²
     quadrotor = make_quadrotor()
-    quadrotor.set_thrusts(np.zeros(4))
+    quadrotor.set_thrusts(np.zeros(QDIMS.motor_count))
     dt = 0.01
     steps = 10
 

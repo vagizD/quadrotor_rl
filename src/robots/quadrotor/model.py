@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from numpy.typing import ArrayLike
 
+from common.dimensions import QDIMS
 from common.types import FloatVector
 from .dynamics import compute_external_force_acceleration as _compute_external_force_acceleration
 from .dynamics import compute_gravity_acceleration as _compute_gravity_acceleration
@@ -27,7 +28,9 @@ class Quadrotor:
 
     params: QuadrotorParams
     state: QuadrotorState
-    thrusts: FloatVector = field(default_factory=lambda: np.zeros(4))
+    thrusts: FloatVector = field(
+        default_factory=lambda: np.zeros(QDIMS.motor_count),
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.params, QuadrotorParams):

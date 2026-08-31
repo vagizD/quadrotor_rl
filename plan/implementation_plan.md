@@ -88,6 +88,9 @@ project_root/
 |-- styleguide.md
 |-- implementation_plan.md
 |
+|-- docs/
+|   |-- diagnose_physics.md
+|
 |-- src/
 |   |-- common/
 |   |   |-- __init__.py
@@ -98,6 +101,8 @@ project_root/
 |   |
 |   |-- simulation/
 |   |   |-- __init__.py
+|   |   |-- trajectory.py
+|   |   |-- recorder.py
 |   |   |-- integrators/
 |   |       |-- __init__.py
 |   |       |-- _common.py
@@ -137,9 +142,10 @@ project_root/
 |   |-- visualization/
 |       |-- __init__.py
 |       |-- plotting.py
-|       |-- viewer.py
+|       |-- rerun_viewer.py
 |
 |-- scripts/
+|   |-- diagnose_physics.py
 |   |-- train.py
 |   |-- evaluate.py
 |   |-- visualize.py
@@ -148,10 +154,24 @@ project_root/
 |   |-- ppo_hover_baseline.toml
 |
 |-- tests/
-|   |-- test_rotation.py
-|   |-- test_motors.py
-|   |-- test_dynamics.py
-|   |-- test_integrators.py
+|   |-- common.py
+|   |-- geometry/
+|       |-- test_rotation.py
+|   |-- robots/
+|       |-- quadrotor/
+|           |-- test_state.py
+|           |-- test_params.py
+|           |-- test_motors.py
+|           |-- test_dynamics.py
+|           |-- test_quadrotor.py
+|   |-- simulation/
+|       |-- integrators/
+|           |-- test_integrators.py
+|       |-- test_trajectory.py
+|       |-- test_recorder.py
+|   |-- visualization/
+|       |-- test_visualization.py
+|       |-- test_rerun_viewer.py
 |   |-- test_quadrotor_hover_environment.py
 |   |-- physics/
 |       |-- test_quadrotor_scenarios.py
@@ -203,6 +223,18 @@ Both integrators expose the same `step(state, derivative_function)` interface an
 positive timestep. Their implementations live in separate modules, with only validation shared.
 
 The integrator knows how to advance a dynamical system but does not know what robot is being simulated.
+
+### `simulation/trajectory.py`
+
+Defines a backend-independent `Trajectory` record for physics and deterministic evaluation.
+It aligns state samples at `t_0 ... t_N` with thrust actions applied over the `N` transitions.
+It also saves and loads validated recordings in a compressed NumPy format. Visualization libraries
+must not leak into this data model.
+
+### `simulation/recorder.py`
+
+Connects a quadrotor, a fixed thrust schedule, and a generic integrator to the `Trajectory`
+record. It uses pure derivative callbacks and does not mutate the source robot.
 
 ### `robots/quadrotor/state.py`
 
@@ -371,6 +403,10 @@ motor_spin_directions
 dt
 integrator
 
+[dimensions]
+observation_dim
+action_dim
+
 [environment]
 task parameters
 episode horizon
@@ -392,6 +428,15 @@ architecture settings
 
 Use TOML for human-readable configuration.
 
+The `[dimensions]` section explicitly declares the observation and action interface used by the
+experiment. The loader validates these declarations against the currently implemented state
+layout and quadrotor actuator layout, so a changed dimension cannot silently run with an
+incompatible environment or policy.
+
+The fixed quadrotor component dimensions and derived state slices are grouped in the immutable
+`QuadrotorDimensions` value object. This keeps structural model dimensions together while the
+experiment config remains the explicit source of the policy/environment interface declaration.
+
 ### `experiments/runner.py`
 
 Creates run directories, freezes resolved config, records metadata, and provides the selected algorithm with the experiment configuration.
@@ -401,6 +446,7 @@ It should not contain PPO mathematics.
 ### `experiments/tracking.py`
 
 Provides training observability and persistent metric logging.
+This module belongs to Phase P and is not part of the Phase I physics-diagnostics foundation.
 
 Every training run must expose progress in three forms:
 
@@ -444,17 +490,27 @@ tool-independent record used for later analysis and plotting.
 
 ### `visualization/plotting.py`
 
-Produces required plots:
+Consumes trajectory data and produces physics/evaluation plots:
 
 ```text
 x/y/z setpoints vs responses
+linear and angular velocity vs time
+quaternion components vs time when useful
 f1/f2/f3/f4 vs time
-training/evaluation metrics
 ```
 
-### `visualization/viewer.py`
+Later RL phases may add reward and training-metric plots without changing the physics data path.
 
-Provides 3D drone/trajectory visualization independent of physics.
+### `visualization/rerun_viewer.py`
+
+Logs vehicle pose, body axes, motor geometry, target, and trajectory to Rerun. It consumes a
+recorded trajectory plus the visualization-only arm length, and remains independent of dynamics
+and numerical integration. Rerun is an optional visualization dependency.
+
+### `scripts/diagnose_physics.py`
+
+Runs deterministic simulator scenarios, records one trajectory, and sends the same data to
+static plotting and optional Rerun recording/playback. It contains no environment or RL logic.
 
 ### `scripts/train.py`
 
@@ -585,19 +641,20 @@ Phase E  rotational dynamics
 Phase F  full derivative
 Phase G  integration
 Phase H  simulator validation
-Phase I  experiment configuration foundation
-Phase J  hover environment
-Phase K  visualization and evaluation tools
+Phase I  physics diagnostics and visualization
+Phase J  experiment configuration foundation
+Phase K  hover environment
 Phase L  RL formulation freeze
 Phase M  actor/critic
 Phase N  rollout collection
 Phase O  PPO optimization
-Phase P  training, monitoring, and run management
+Phase P  training, TensorBoard, RL visualization, and run management
 Phase Q  evaluation
 Phase R  disturbance experiments
 ```
 
-RL implementation must not begin until the simulator passes nominal physical tests.
+RL implementation must not begin until the simulator passes nominal physical tests and the
+Phase I diagnostic trajectories can be inspected through static plots and 3D playback.
 
 # Phase A — Data and Physical Parameters
 
@@ -853,25 +910,115 @@ tilted thrust -> horizontal acceleration
 
 No RL until these pass.
 
-# Phase I — Experiment Configuration Foundation
+# Phase I — Physics Diagnostics and Visualization
 
-## Iteration I1 — Minimal TOML config
+This phase creates physics-first diagnostics before environment or RL work. The trajectory data
+model, static plots, and 3D playback must work for deterministic simulator scenarios. Do not add
+reward, policy-loss, or TensorBoard concerns yet.
+
+## Iteration I1 — Trajectory data model
+
+Add a backend-independent `Trajectory` class with validated arrays for:
+
+```text
+times              shape (N + 1,)
+states             shape (N + 1, 13)
+motor thrusts      shape (N, 4)
+optional targets   fixed or shape (N + 1, 3)
+```
+
+State sample `k` describes the system at `t_k`; thrust sample `k` is applied over the transition
+from `t_k` to `t_(k+1)`. This alignment must remain explicit because later rewards and done flags
+will also belong to transitions.
+
+## Iteration I2 — Physics trajectory recorder
+
+Add `record_quadrotor_trajectory` to record a trajectory from a source `Quadrotor`, fixed thrust
+schedule, selected integrator, and number of transitions. Use the existing pure vector derivative
+callback and do not mutate the source `Quadrotor` while evaluating temporary states.
+
+Start with deterministic diagnostic scenarios such as:
+
+```text
+free fall
+hover equilibrium
+vertical climb
+pure roll, pitch, and yaw inputs
+tilted thrust
+```
+
+## Iteration I3 — Static physics plots
+
+Add trajectory save/load support using a durable, non-pickle array format so generated diagnostic
+recordings can be inspected again without rerunning the simulator.
+
+Generate reusable plots from `Trajectory`:
+
+```text
+x/y/z position vs time, with target when available
+linear velocity vs time
+angular velocity vs time
+quaternion components vs time when debugging attitude
+f1/f2/f3/f4 thrust vs transition time
+```
+
+Plotting functions consume recorded data only; they must never execute or modify physics.
+
+## Iteration I4 — Rerun 3D playback
+
+Visualize a recorded trajectory in Rerun with simulation time as the timeline. Log at least:
+
+```text
+quadrotor position and orientation
+body axes and motor-arm geometry
+world axes
+trajectory path
+target position when present
+motor thrusts as scalar time series
+```
+
+Allow file-only `.rrd` output or optional viewer spawning. The Rerun adapter must remain optional
+and isolated from physics so headless tests and training can run without opening a viewer.
+
+## Iteration I5 — Physics diagnostics entry point
+
+Add `scripts/diagnose_physics.py` to select a deterministic scenario and integrator, record the
+trajectory once, then feed that same record to static plots and Rerun. Support saving reusable
+trajectory data and an Rerun recording for later inspection.
+
+## Iteration I6 — Diagnostics verification
+
+Test trajectory alignment and numerical values directly. Smoke-test static plot creation and the
+Rerun logging adapter without requiring an interactive window. Manually inspect at least hover,
+free fall, tilted thrust, and one rotational scenario before proceeding.
+
+The same trajectory remains the source for later deterministic RL evaluation. Phase P will add
+reward, return, episode, and optimization metrics alongside these physics channels rather than
+reimplementing pose, thrust, and trajectory logging.
+
+# Phase J — Experiment Configuration Foundation
+
+## Iteration J1 — Minimal TOML config
 
 Create one baseline experiment config containing only currently implemented physical/simulation values.
 
-## Iteration I2 — Config loading
+## Iteration J2 — Config loading
 
 Load and validate the config.
 
-## Iteration I3 — Resolved config snapshot
+## Iteration J3 — Resolved config snapshot
 
 Create the mechanism that can serialize the exact resolved configuration.
 
+The single experiment config owns experiment identity, algorithm selection, physical parameters,
+simulation settings, hover-task limits, and reward weights. The loader is strict: changing the
+current schema makes older configs invalid instead of silently applying new defaults.
+
 Do not create training run infrastructure yet.
 
-# Phase J — Hover Environment
+# Phase K — Hover Environment
 
-## Iteration J1 — Reset and task state
+## Iteration K1 — Reset and task state
 
 Add:
 
@@ -884,7 +1031,7 @@ reset()
 
 Initially reset to nominal hover.
 
-## Iteration J2 — Observation
+## Iteration K2 — Observation
 
 Freeze exact observation scalar order.
 
@@ -897,7 +1044,7 @@ quaternion
 angular velocity
 ```
 
-## Iteration J3 — Action validation
+## Iteration K3 — Action validation
 
 Guarantee:
 
@@ -905,7 +1052,7 @@ Guarantee:
 0 <= f_i <= f_max
 ```
 
-## Iteration J4 — Environment step
+## Iteration K4 — Environment step
 
 One step:
 
@@ -916,17 +1063,28 @@ update task state/time
 return observation
 ```
 
-## Iteration J5 — Reward
+## Iteration K5 — Reward
 
-Add initial hover objective.
+Add the initial survival-oriented hover objective.
 
-## Iteration J6 — Termination
+Keep the reward formula in the hover task, but source every tunable coefficient from the experiment
+config. Position, motion, uprightness, heading, alive, distance-dependent survival, failure, and
+control-effort terms are task choices, not PPO losses. The configured target heading fixes the yaw
+degree of freedom that is not constrained by the thrust direction alone. Normalize the raw cost with
+a smooth, configuration-scaled map into `[0, 0.9)` and log both raw and normalized costs so their
+relationship remains visible during training.
+
+## Iteration K6 — Termination
 
 Add time horizon and clear failure bounds.
 
-## Iteration J7 — Initial-state randomization
+Return separate `terminated` and `truncated` flags. The time horizon is a truncation; physical
+termination is reserved for leaving the recoverable position region or exceeding the tilt limit.
+Velocity and angular rate remain reward terms so the policy can recover from fast transients.
 
-Add small perturbations to:
+## Iteration K7 — Initial-state randomization
+
+Add a configurable `RandomInitializer` that samples small perturbations in:
 
 ```text
 position
@@ -935,19 +1093,9 @@ attitude
 angular velocity
 ```
 
-# Phase K — Visualization and Evaluation Tools
-
-## Iteration K1 — Position plots
-
-Plot x/y/z target vs response.
-
-## Iteration K2 — Motor plots
-
-Plot f1..f4 over time.
-
-## Iteration K3 — 3D viewer
-
-Visualize vehicle pose, trajectory, and target.
+The initializer name and all minimum/maximum ranges belong to the experiment configuration.
+The experiment seed controls its local random-number generator, so the same resolved config
+reproduces the same reset sequence. External-force disturbances remain disabled for now.
 
 # Phase L — RL Formulation Freeze
 
@@ -971,19 +1119,44 @@ normalization
 
 Do not let Codex choose these silently.
 
+The current hover-task formulation freezes the configured observation dimension as position error,
+world linear velocity, scalar-first quaternion, and body angular velocity. The quaternion already
+contains yaw, while the fixed target heading remains in the experiment configuration. The action
+dimension is configured as one bounded thrust value per rotor. The reward uses a fixed per-step alive
+component, a single weighted position-error term inside a smooth normalized state/control cost, and
+a configurable physical-failure penalty. The position weight is increased in the baseline so target
+regulation is more important than the secondary stability terms. The normalized cost is bounded
+below the alive component, so
+every nonterminal survival step remains positive; no separate success or truncation bonus is used.
+Physical failures use a strong configured penalty, while a non-failing horizon truncation receives a
+configured penalty based on its final distance to the target. Raw and normalized costs remain
+available as diagnostics. The target heading is a required
+environment setting, currently zero in the baseline config. Success tolerances are shared by the
+environment task and deterministic evaluation. The training objective is survival near the
+configured target; the stricter tolerances are used for quality evaluation.
+
+The baseline uses `gamma = 0.999` with `dt = 0.01`, corresponding to an approximately ten-second
+e-folding discount horizon. This keeps a reward at the end of the ten-second episode relevant to
+earlier decisions; gamma is part of the resolved experiment configuration rather than an external
+trainer setting.
+
 # Phase M — Actor/Critic
 
 ## Iteration M1 — Actor
 
-Small MLP forward pass only.
+Implement a small actor MLP with two `Tanh` hidden layers of 64 units. Its forward pass returns
+one unconstrained pre-squash mean per rotor action.
 
 ## Iteration M2 — Continuous action distribution
 
-Sampling and log probability.
+Use a diagonal Gaussian in the actor's pre-squash space, transform it with `tanh`, and map it to
+the configured thrust bounds. Compute log probability with the corresponding change-of-variables
+term instead of clipping sampled actions.
 
 ## Iteration M3 — Critic
 
-Scalar value output.
+Implement a separate two-layer 64-unit `Tanh` MLP that returns one scalar value for each
+observation.
 
 ## Iteration M4 — Combined interface
 
@@ -1004,45 +1177,85 @@ log probabilities
 done flags
 ```
 
+Represent one contiguous collected segment as `PPOTrajectory`, a specialization of the
+visualization-ready `Trajectory`. It retains the aligned physical samples and adds the PPO fields
+above. Collection/storage logic remains separate and owns episode boundaries or later batching;
+the trajectory object itself only represents its supplied point-A-to-point-B sequence.
+
 ## Iteration N2 — Returns
 
 Verify with a hand-computable example.
+
+For a segment with discount factor `gamma`, compute return-to-go backward:
+
+```text
+G_t = r_t + gamma * (1 - terminated_t) * G_{t+1}
+```
+
+The final `G_T` uses `boundary_state_value`, the critic value of the first state outside the
+segment, when the segment ends by truncation or rollout length. A physical terminal transition
+has zero future value. Time-limit truncation does not mask the boundary state value.
 
 ## Iteration N3 — Advantages / GAE
 
 Add only after plain returns are verified.
 
+Compute generalized advantage estimates from the same boundary state value:
+
+```text
+delta_t = r_t + gamma * (1 - terminated_t) * V_{t+1} - V_t
+A_t = delta_t + gamma * gae_lambda * (1 - terminated_t) * A_{t+1}
+```
+
+`gae_lambda = 0` gives one-step TD residuals; `gae_lambda = 1` gives return-to-go minus the
+current value estimate, up to the available segment boundary.
+
 # Phase O — PPO Optimization
 
-## Iteration O1 — Probability ratio
+## Iteration O1 — PPO objective terms
 
 ```text
 ratio = exp(new_log_prob - old_log_prob)
+L_policy = -mean(min(ratio * advantage,
+                     clip(ratio, 1 - epsilon, 1 + epsilon) * advantage))
+L_value = mean((value - return) ** 2)
+L_total = L_policy + value_loss_coef * L_value - entropy_coef * entropy
 ```
 
-## Iteration O2 — Clipped surrogate
+Implement these terms in `rl/ppo/trainer.py`. The PPO settings belong to the unified `[ppo]`
+configuration, including the clipping range, learning rate, value-loss coefficient, and entropy
+coefficient. The baseline uses a full rollout batch; minibatches and repeated epochs are future
+training-loop decisions.
 
-Implement and manually verify on tiny tensors.
+## Iteration O2 — Full-batch PPO update
 
-## Iteration O3 — Value loss
+Implement `PPORollout` as storage for multiple `PPOTrajectory` segments. Compute returns and GAE
+within each segment, concatenate only the transition arrays into a `PPOBatch`, and update the
+actor and critic once from that combined batch. Return scalar diagnostics for later tracking.
 
-## Iteration O4 — Entropy term if needed
+## Iteration O3 — PPO loop verification
 
-## Iteration O5 — Optimizer update
+Use one focused test to verify the probability ratio, clipping behavior, finite update diagnostics,
+and parameter change after one update. Do not add separate tests for every individual torch
+operation.
 
-Verify finite loss, gradients, and parameter change.
+# Phase P — Training, TensorBoard, RL Visualization, and Run Management
 
-# Phase P — Training, Monitoring, and Run Management
+This is the second visualization layer. Reuse the Phase I trajectory, static plotting, and Rerun
+pose/thrust channels, then add RL-specific metrics. TensorBoard begins here because reward,
+episode, and optimization signals do not exist during physics-only diagnostics.
 
 ## Iteration P1 — One PPO update cycle
 
 ```text
-collect
-compute returns/advantages
+collect segments until the configured rollout size
+compute returns/advantages per segment
+combine with PPORollout
 update
 ```
 
-Verify one complete update without a long training run.
+Use the configured rollout step count to collect multiple short episode segments when needed,
+then verify one complete update without a long training run.
 
 ## Iteration P2 — Run directory creation
 
@@ -1052,7 +1265,10 @@ Create:
 runs/<experiment>/<run_id>/
 ```
 
-and save resolved config + metadata before long-running training begins.
+and save resolved config + metadata before long-running training begins. The run ID uses the
+timestamp/seed/config-hash convention, and the initial directory contains `config.toml`,
+`metadata.json`, `checkpoints/`, `plots/`, and `evaluation/`. The training loop receives this
+run-directory object instead of constructing paths independently.
 
 ## Iteration P3 — Persistent metric logging
 
@@ -1062,7 +1278,10 @@ Write training metrics to:
 metrics.csv
 ```
 
-Start with a small, explicit set of metrics and verify the file contents on a short run.
+Start with a small, explicit schema covering update count, environment steps, episode return and
+length, RMS position error, policy loss, value loss, and simulation throughput. Verify the file
+contents on a short run. The logger must write inside the run directory and flush each row so the
+CSV remains useful if training stops unexpectedly.
 
 ## Iteration P4 — Console progress summaries
 
@@ -1083,11 +1302,16 @@ simulation throughput
 
 The training process must not be silent.
 
+Use the same metric names as `metrics.csv`, including both mean and rolling episode return. Missing
+values may be displayed as `-` while the corresponding metric is not yet available.
+
 ## Iteration P5 — TensorBoard live monitoring
 
 Write the same core metrics to TensorBoard-compatible event logs inside the run directory.
 
-Verify on a short run that curves update live.
+Use the run-local `tensorboard/` directory and the update number as the TensorBoard global step.
+Flush after each logged update so curves remain visible during a live run. Verify on a short run
+that scalar event files and curves are written.
 
 Primary curves:
 
@@ -1112,7 +1336,30 @@ explained variance
 
 Do not rely on reward alone; physical hover metrics must be visible.
 
-## Iteration P6 — Periodic deterministic evaluation probe
+## Iteration P6 — RL-specific Rerun enrichment
+
+Extend Rerun logging for selected training and deterministic-evaluation episodes with:
+
+```text
+step reward and cumulative return
+reward components when defined
+position error and success/failure state
+action/thrust statistics
+episode boundaries
+policy/value losses and PPO diagnostics when useful
+```
+
+Do not stream every training transition by default. Use configurable sampling or selected
+episodes so visualization does not dominate training time or recording size.
+
+The implementation uses the single `visualization.rerun_viewer.log_trajectory` API for both
+`Trajectory` and `PPOTrajectory` objects. Rerun records only sampled physical data: the 3D
+trajectory, target, pose, and motor thrusts. `TrackingConfig.rerun_step_stride` controls the
+default sampling policy; the caller still chooses which training or evaluation episodes to
+record. Rewards and PPO diagnostics belong to the TensorBoard/training metrics path and are
+not duplicated in Rerun.
+
+## Iteration P7 — Periodic deterministic evaluation probe
 
 Every configurable number of training updates, evaluate the current policy from one or more
 fixed initial conditions without exploration noise.
@@ -1130,14 +1377,32 @@ episode success/failure
 These evaluation probes should use the same initial conditions across training so that progress
 is directly comparable. They provide a cleaner learning signal than stochastic training reward.
 
+`EvaluationConfig` stores the evaluation interval, number of episodes, and initial-state seed.
+`HoverSuccessConfig`, nested under the environment configuration, stores the shared success
+tolerances. `DeterministicEvaluator` samples its initial states once from a separate seeded
+initializer, then reuses copies of those states for every probe. It uses the actor's bounded
+distribution mean, never an exploration sample, and returns the same visualization-ready
+`Trajectory` representation used by physics diagnostics. Reaching the time horizon is recorded as
+truncation; success additionally requires the shared final position, speed, angular-rate, tilt,
+and heading tolerances. `EvaluationSummary.as_metrics` exposes the aggregate physical metrics for
+CSV and TensorBoard logging.
+
 Optionally save/update compact position-response plots for selected evaluation checkpoints.
 
-## Iteration P7 — Repeated updates
+## Iteration P8 — Repeated updates
 
 Enable long-running training only after console, CSV, TensorBoard, and periodic evaluation
 monitoring all work.
 
-## Iteration P8 — Checkpointing
+Add `rl.ppo.training.train_experiment` and `scripts/train.py`. Each configured update collects
+one `PPORollout`, performs one full-batch PPO update, records training throughput and rollout
+statistics, and writes the same metric row to console, CSV, and TensorBoard. At the configured
+evaluation interval, deterministic evaluation metrics are added to that row and the resulting
+physical trajectories are saved under the run's `evaluation/` directory. Optional Rerun files
+are controlled by `tracking.record_evaluation_rerun`; no checkpointing or repeated optimizer
+epochs are introduced before P9/P10.
+
+## Iteration P9 — Checkpointing
 
 Save:
 
@@ -1149,15 +1414,50 @@ final.pt
 
 A checkpoint must remain traceable to its run-local resolved config.
 
-## Iteration P9 — Training stabilization
+Save one `step_<update>.pt` checkpoint after every update, `best.pt` whenever deterministic
+evaluation improves, and `final.pt` after the configured run. Each file contains actor and critic
+weights, both optimizer states, update/environment-step counters, the run ID, config hash, and
+the resolved configuration snapshot. The best checkpoint prioritizes evaluation success rate,
+then lower RMS position error, final position error, mean speed, and maximum angular rate.
 
-Only then consider:
+## Iteration P10 — Training stabilization
+
+First, reuse each collected rollout for a configurable number of PPO optimizer passes. Add
+`ppo.steps_per_rollout`; `rollout_steps` remains the number of environment transitions collected,
+while `steps_per_rollout` controls how many actor/critic updates reuse that batch. Recompute the
+probability ratio against the stored rollout log-probabilities on every pass, and aggregate the
+per-pass diagnostics for console, CSV, and TensorBoard. The first pass has ratio one by
+construction; later passes make PPO clipping observable.
+
+Add the first conditioning layer in the same resolved configuration:
 
 ```text
-observation normalization
-advantage normalization
-reward scaling
-gradient clipping
+running observation normalization with clipping
+batch-wide advantage normalization
+reward scaling for return/GAE targets
+independent actor and critic gradient-norm clipping
+```
+
+The rollout keeps raw observations for updating the running statistics while the policy-facing
+observations remain normalized. Normalization statistics are frozen across one collected rollout,
+then checkpointed with the networks. Keep the existing learning-rate field as the single tuning
+knob while these changes are verified; tune it only after the diagnostics are stable.
+
+The baseline also bounds the actor's learned pre-squash log standard deviation with configured
+`min_log_std` and `max_log_std` values. Training logs the effective latent policy standard deviation
+separately from the empirical physical thrust standard deviation, since the latter also includes
+variation in the policy mean across states.
+
+Only after this is verified consider:
+
+```text
+hover-centered action residuals
+curriculum over the initializer ranges
+```
+
+and then:
+
+```text
 learning-rate tuning
 ```
 
@@ -1214,13 +1514,13 @@ Prioritize:
 2. correct physics
 3. physical tests
 4. Euler + RK4
-5. reproducible config
-6. hover environment
-7. PPO
-8. training/run management
-9. x/y/z plots
-10. four motor plots
-11. 3D visualization
+5. trajectory recording
+6. physics plots and Rerun 3D diagnostics
+7. reproducible config
+8. hover environment
+9. PPO
+10. TensorBoard and RL-specific Rerun diagnostics
+11. training/run management
 12. final explanation
 ```
 

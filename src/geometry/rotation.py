@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from common.dimensions import QDIMS
 from common.types import FloatMatrix, FloatVector
 
 
@@ -51,8 +52,11 @@ class Quaternion:
     ) -> "Quaternion":
         if not isinstance(value, np.ndarray):
             raise TypeError("quaternion must be a NumPy array")
-        if value.shape != (4,):
-            raise ValueError(f"quaternion must have shape (4,), got {value.shape}")
+        if value.shape != (QDIMS.quaternion_dim,):
+            raise ValueError(
+                "quaternion must have shape "
+                f"({QDIMS.quaternion_dim},), got {value.shape}"
+            )
         w, x, y, z = value
         return cls(w, x, y, z, normalize=normalize)
 
@@ -61,6 +65,14 @@ class Quaternion:
 
     def norm(self) -> float:
         return float(np.sqrt(self.w**2 + self.x**2 + self.y**2 + self.z**2))
+
+    def to_yaw(self) -> float:
+        return float(
+            np.arctan2(
+                2.0 * (self.w * self.z + self.x * self.y),
+                1.0 - 2.0 * (self.y * self.y + self.z * self.z),
+            )
+        )
 
     def normalized(self) -> "Quaternion":
         return Quaternion(self.w, self.x, self.y, self.z)

@@ -34,8 +34,14 @@ def test_quaternion_multiplication_identity_both_orders() -> None:
     identity = Quaternion.identity()
     quaternion = Quaternion(0.5, 0.5, 0.5, 0.5)
 
-    np.testing.assert_allclose((identity * quaternion).as_array(), quaternion.as_array())
-    np.testing.assert_allclose((quaternion * identity).as_array(), quaternion.as_array())
+    np.testing.assert_allclose(
+        (identity * quaternion).as_array(),
+        quaternion.as_array(),
+    )
+    np.testing.assert_allclose(
+        (quaternion * identity).as_array(),
+        quaternion.as_array(),
+    )
 
 
 def test_raw_quaternion_product_stays_raw() -> None:
@@ -57,6 +63,15 @@ def test_ninety_degree_positive_yaw_rotates_x_to_y() -> None:
         rotation @ [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
         atol=1e-12,
+    )
+
+
+def test_to_yaw_returns_positive_ninety_degree_heading() -> None:
+    half_angle = np.sqrt(0.5)
+
+    assert np.isclose(
+        Quaternion(half_angle, 0.0, 0.0, half_angle).to_yaw(),
+        np.pi / 2.0,
     )
 
 

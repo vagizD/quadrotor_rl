@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import ArrayLike
 
+from common.dimensions import QDIMS
 from common.types import FloatVector
 from geometry.rotation import Quaternion
 
@@ -27,8 +28,16 @@ class QuadrotorState:
     angular_velocity: FloatVector
 
     def __post_init__(self) -> None:
-        self.position = _as_vector(self.position, "position", 3)
-        self.velocity = _as_vector(self.velocity, "velocity", 3)
+        self.position = _as_vector(
+            self.position,
+            "position",
+            QDIMS.position_dim,
+        )
+        self.velocity = _as_vector(
+            self.velocity,
+            "velocity",
+            QDIMS.velocity_dim,
+        )
         if not isinstance(self.quaternion, Quaternion):
             raise TypeError("quaternion must be a Quaternion")
         if not np.isclose(self.quaternion.norm(), 1.0):
@@ -36,7 +45,7 @@ class QuadrotorState:
         self.angular_velocity = _as_vector(
             self.angular_velocity,
             "angular_velocity",
-            3,
+            QDIMS.angular_velocity_dim,
         )
 
     def to_vector(self) -> FloatVector:
@@ -51,12 +60,12 @@ class QuadrotorState:
 
     @classmethod
     def from_vector(cls, value: FloatVector) -> "QuadrotorState":
-        vector = _as_vector(value, "state", 13)
+        vector = _as_vector(value, "state", QDIMS.state_dim)
         return cls(
-            position=vector[0:3],
-            velocity=vector[3:6],
-            quaternion=Quaternion.from_array(vector[6:10]),
-            angular_velocity=vector[10:13],
+            position=vector[QDIMS.position_slice],
+            velocity=vector[QDIMS.velocity_slice],
+            quaternion=Quaternion.from_array(vector[QDIMS.quaternion_slice]),
+            angular_velocity=vector[QDIMS.angular_velocity_slice],
         )
 
 
@@ -70,13 +79,25 @@ class QuadrotorStateDerivative:
     angular_velocity: FloatVector
 
     def __post_init__(self) -> None:
-        self.position = _as_vector(self.position, "position derivative", 3)
-        self.velocity = _as_vector(self.velocity, "velocity derivative", 3)
-        self.quaternion = _as_vector(self.quaternion, "quaternion derivative", 4)
+        self.position = _as_vector(
+            self.position,
+            "position derivative",
+            QDIMS.position_dim,
+        )
+        self.velocity = _as_vector(
+            self.velocity,
+            "velocity derivative",
+            QDIMS.velocity_dim,
+        )
+        self.quaternion = _as_vector(
+            self.quaternion,
+            "quaternion derivative",
+            QDIMS.quaternion_dim,
+        )
         self.angular_velocity = _as_vector(
             self.angular_velocity,
             "angular velocity derivative",
-            3,
+            QDIMS.angular_velocity_dim,
         )
 
     def to_vector(self) -> FloatVector:

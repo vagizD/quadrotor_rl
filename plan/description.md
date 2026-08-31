@@ -582,6 +582,10 @@ angular velocity: omega
 
 or an equivalent representation containing the same information.
 
+The quaternion already contains the vehicle yaw. Because the current target heading is fixed by
+the experiment configuration, a separate heading-error observation is unnecessary; the heading
+error is computed by the environment for the reward.
+
 The environment does not initially simulate
 
 ```text
@@ -600,7 +604,7 @@ This isolates the rigid-body control and RL problem from perception and estimati
 
 The reward should express the desired behavior without explicitly encoding a classical controller.
 
-A generic hover objective can penalize
+A generic hover objective can reward valid episode progress while penalizing
 
 ```text
 position error
@@ -610,18 +614,62 @@ excessive attitude deviation
 unnecessary control effort
 ```
 
-Conceptually,
+For the current hover task, define the wrapped heading error as
 
 ```text
-r =
-    - w_p     ||p - p*||^2
-    - w_v     ||v||^2
-    - w_omega ||omega||^2
-    - w_q     attitude_error
-    - w_u     control_cost
+e_psi = wrap_to_pi(psi* - psi)
 ```
 
-with nonnegative weights.
+where `psi*` is the configured target heading and `psi` is the yaw extracted from `q_WB`.
+The raw state/control cost is
+
+```text
+C_t = w_p       ||p_t - p*||^2
+      + w_v       ||v_t||^2
+      + w_tilt    (1 - z_B_in_W,z,t)
+      + w_heading e_psi,t^2
+      + w_omega   ||omega_t||^2
+      + w_u       ||u_t - u_hover||^2
+```
+
+Let the bounded cost be
+
+```text
+C_norm,t = normalized_cost_limit
+            * (1 - exp(-C_t / cost_normalization_scale))
+```
+
+The cost scale is a configuration value chosen from observed raw-cost statistics. The exponential
+map is smooth and monotone: it preserves the ordering of costs while mapping nonnegative costs to
+`[0, normalized_cost_limit)`. The baseline uses `normalized_cost_limit = 0.9`, so this is not a
+hard cost plateau.
+
+The reward is then
+
+```text
+r_t = r_alive - C_norm,t
+      - 1[terminated] * terminal_penalty
+      - 1[truncated and not terminated]
+        * terminal_penalty * (1 - s_T)
+
+s_T = 1 / (1 + d_T / truncation_distance_scale)
+```
+
+All coefficients are configuration values and are nonnegative. The alive reward expresses that
+remaining inside the valid task region is itself desirable. Position is represented only once,
+through its configured weight in the raw cost. Physical termination receives the full
+`terminal_penalty`. A time-limit truncation receives a terminal position penalty on the same scale:
+it is zero at the target and approaches `terminal_penalty` far away. This ranks otherwise surviving
+episodes by their final position without adding a truncation bonus. The moderate baseline penalty
+keeps the terminal signal useful without making early physical failures dominate the first learning
+stage. Because the normalized cost limit is below the alive reward, every nonterminal step remains
+positive even at large raw cost. The raw and normalized costs remain available as diagnostics. The
+same success tolerances are retained for deterministic evaluation as a stricter quality diagnostic,
+not as a separate reward event.
+
+The body-up term measures roll/pitch deviation and intentionally ignores yaw; the separate
+heading term fixes the remaining rotational degree of freedom. No classical controller rule is
+encoded in the reward.
 
 The reward should not prescribe explicit PX4-style rules such as
 

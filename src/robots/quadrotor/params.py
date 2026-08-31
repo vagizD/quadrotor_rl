@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from common.dimensions import QDIMS
 from common.types import FloatMatrix, FloatVector
 
 
@@ -58,9 +59,10 @@ class QuadrotorParams:
             dtype=np.float64,
             copy=True,
         )
-        if directions.shape != (4,):
+        if directions.shape != (QDIMS.motor_count,):
             raise ValueError(
-                "motor_spin_directions must have shape (4,), "
+                "motor_spin_directions must have shape "
+                f"({QDIMS.motor_count},), "
                 f"got {directions.shape}"
             )
         if not np.all(np.isin(directions, (-1.0, 1.0))):

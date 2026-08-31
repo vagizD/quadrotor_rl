@@ -2,14 +2,18 @@
 
 import numpy as np
 
+from common.dimensions import QDIMS
 from common.types import FloatVector
 
 
 def _require_thrusts(thrusts: FloatVector) -> None:
     if not isinstance(thrusts, np.ndarray):
         raise TypeError("thrusts must be a NumPy array")
-    if thrusts.shape != (4,):
-        raise ValueError(f"thrusts must have shape (4,), got {thrusts.shape}")
+    if thrusts.shape != (QDIMS.motor_count,):
+        raise ValueError(
+            "thrusts must have shape "
+            f"({QDIMS.motor_count},), got {thrusts.shape}"
+        )
     if not np.all(np.isfinite(thrusts)):
         raise ValueError("thrusts must contain only finite values")
     if np.any(thrusts < 0.0):
@@ -36,9 +40,10 @@ def compute_torque(
         raise ValueError("yaw_torque_coefficient must be finite and positive")
     if not isinstance(motor_spin_directions, np.ndarray):
         raise TypeError("motor_spin_directions must be a NumPy array")
-    if motor_spin_directions.shape != (4,):
+    if motor_spin_directions.shape != (QDIMS.motor_count,):
         raise ValueError(
-            "motor_spin_directions must have shape (4,), "
+            "motor_spin_directions must have shape "
+            f"({QDIMS.motor_count},), "
             f"got {motor_spin_directions.shape}"
         )
     if not np.all(np.isin(motor_spin_directions, (-1.0, 1.0))):

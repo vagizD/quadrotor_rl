@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 
+from common.dimensions import QDIMS
 from geometry.rotation import Quaternion
 from robots.quadrotor.dynamics import (
     compute_angular_acceleration,
@@ -12,35 +13,11 @@ from robots.quadrotor.dynamics import (
     compute_state_derivative,
     compute_torque,
 )
-from robots.quadrotor import (
-    Quadrotor,
-    QuadrotorParams,
-    QuadrotorState,
-)
-
-
-def make_state() -> QuadrotorState:
-    return QuadrotorState(
-        position=np.zeros(3),
-        velocity=np.array([1.0, 2.0, 3.0]),
-        quaternion=Quaternion.identity(),
-        angular_velocity=np.zeros(3),
-    )
-
-
-def make_quadrotor(state: QuadrotorState) -> Quadrotor:
-    params = QuadrotorParams(
-        mass=1.0,
-        arm_length=0.2,
-        inertia=np.diag([0.01, 0.01, 0.02]),
-        yaw_torque_coefficient=0.1,
-        max_thrust=5.0,
-    )
-    return Quadrotor(params, state)
+from tests.common import make_quadrotor, make_state
 
 
 def test_position_derivative_equals_velocity_without_aliasing() -> None:
-    state = make_state()
+    state = make_state(velocity=np.array([1.0, 2.0, 3.0]))
     derivative = compute_position_derivative(state)
     derivative[0] = 99.0
 
@@ -49,7 +26,7 @@ def test_position_derivative_equals_velocity_without_aliasing() -> None:
 
 
 def test_quadrotor_position_derivative_delegates_to_pure_function() -> None:
-    state = make_state()
+    state = make_state(velocity=np.array([1.0, 2.0, 3.0]))
     quadrotor = make_quadrotor(state)
 
     np.testing.assert_allclose(quadrotor.compute_position_derivative(), state.velocity)
@@ -57,12 +34,7 @@ def test_quadrotor_position_derivative_delegates_to_pure_function() -> None:
 
 def test_quaternion_derivative_uses_body_angular_velocity() -> None:
     angular_velocity = np.array([1.0, 2.0, 3.0])
-    state = QuadrotorState(
-        position=np.zeros(3),
-        velocity=np.zeros(3),
-        quaternion=Quaternion.identity(),
-        angular_velocity=angular_velocity,
-    )
+    state = make_state(angular_velocity=angular_velocity)
     quadrotor = make_quadrotor(state)
 
     # [0, omega] is a pure quaternion used in the derivative equation; q_dot
@@ -74,14 +46,12 @@ def test_quaternion_derivative_uses_body_angular_velocity() -> None:
 
 
 def test_state_derivative_assembles_all_rates_from_one_state_and_action() -> None:
-    state = QuadrotorState(
-        position=np.zeros(3),
+    state = make_state(
         velocity=np.array([1.0, 2.0, 3.0]),
-        quaternion=Quaternion.identity(),
         angular_velocity=np.array([1.0, 2.0, 3.0]),
     )
     quadrotor = make_quadrotor(state)
-    thrusts = np.array([1.0, 2.0, 3.0, 4.0])
+    thrusts = np.arange(1.0, QDIMS.motor_count + 1.0)
     external_force = np.array([0.5, -1.0, 2.0])
     quadrotor.set_thrusts(thrusts)
 
@@ -133,15 +103,14 @@ def test_state_derivative_assembles_all_rates_from_one_state_and_action() -> Non
 
 
 def test_hover_is_a_full_state_derivative_equilibrium() -> None:
-    state = QuadrotorState(
-        position=np.zeros(3),
-        velocity=np.zeros(3),
-        quaternion=Quaternion.identity(),
-        angular_velocity=np.zeros(3),
-    )
+    state = make_state()
     quadrotor = make_quadrotor(state)
-    hover_thrust = quadrotor.params.mass * quadrotor.params.gravity / 4.0
-    quadrotor.set_thrusts(np.full(4, hover_thrust))
+    hover_thrust = (
+        quadrotor.params.mass
+        * quadrotor.params.gravity
+        / QDIMS.motor_count
+    )
+    quadrotor.set_thrusts(np.full(QDIMS.motor_count, hover_thrust))
 
     # Equal thrust cancels gravity and the symmetric rotor layout cancels torque.
     derivative = compute_state_derivative(
@@ -152,7 +121,11 @@ def test_hover_is_a_full_state_derivative_equilibrium() -> None:
 
     np.testing.assert_allclose(derivative.position, np.zeros(3), atol=1e-12)
     np.testing.assert_allclose(derivative.velocity, np.zeros(3), atol=1e-12)
-    np.testing.assert_allclose(derivative.quaternion, np.zeros(4), atol=1e-12)
+    np.testing.assert_allclose(
+        derivative.quaternion,
+        np.zeros(QDIMS.quaternion_dim),
+        atol=1e-12,
+    )
     np.testing.assert_allclose(derivative.angular_velocity, np.zeros(3), atol=1e-12)
     facade_derivative = quadrotor.compute_state_derivative()
     np.testing.assert_allclose(facade_derivative.position, derivative.position)
@@ -165,7 +138,7 @@ def test_hover_is_a_full_state_derivative_equilibrium() -> None:
 
 
 def test_gravity_acceleration_points_downward() -> None:
-    quadrotor = make_quadrotor(make_state())
+    quadrotor = make_quadrotor()
 
     np.testing.assert_allclose(
         compute_gravity_acceleration(quadrotor.params),
@@ -174,7 +147,7 @@ def test_gravity_acceleration_points_downward() -> None:
 
 
 def test_quadrotor_gravity_acceleration_delegates_to_pure_function() -> None:
-    quadrotor = make_quadrotor(make_state())
+    quadrotor = make_quadrotor()
 
     np.testing.assert_allclose(
         quadrotor.compute_gravity_acceleration(),
@@ -183,7 +156,7 @@ def test_quadrotor_gravity_acceleration_delegates_to_pure_function() -> None:
 
 
 def test_external_force_changes_acceleration_by_force_over_mass() -> None:
-    quadrotor = make_quadrotor(make_state())
+    quadrotor = make_quadrotor()
     external_force = np.array([1.0, 2.0, 3.0])
     baseline = quadrotor.compute_linear_acceleration()
 
@@ -203,16 +176,16 @@ def test_external_force_changes_acceleration_by_force_over_mass() -> None:
 
 def test_external_force_requires_finite_three_vector() -> None:
     with pytest.raises(ValueError, match="shape"):
-        compute_external_force_acceleration(np.ones(2), make_quadrotor(make_state()).params)
+        compute_external_force_acceleration(np.ones(2), make_quadrotor().params)
     with pytest.raises(ValueError, match="finite"):
         compute_external_force_acceleration(
             np.array([1.0, np.nan, 0.0]),
-            make_quadrotor(make_state()).params,
+            make_quadrotor().params,
         )
 
 
 def test_zero_rate_torque_response_is_inertia_inverse_times_torque() -> None:
-    quadrotor = make_quadrotor(make_state())
+    quadrotor = make_quadrotor()
     angular_velocity = np.zeros(3)
     torque = np.array([0.01, -0.02, 0.04])
 
@@ -230,7 +203,7 @@ def test_zero_rate_torque_response_is_inertia_inverse_times_torque() -> None:
 
 
 def test_rigid_body_angular_acceleration_includes_cross_term() -> None:
-    quadrotor = make_quadrotor(make_state())
+    quadrotor = make_quadrotor()
     angular_velocity = np.array([1.0, 2.0, 3.0])
     torque = np.zeros(3)
     # For this diagonal inertia, omega x (J*omega) = [0.06, -0.03, 0].
