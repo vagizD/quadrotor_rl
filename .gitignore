@@ -3,8 +3,26 @@ __pycache__/
 .venv/
 
 artifacts/
-runs/
+
+# Ignore runs by default, but un-ignore selected experiment run directories
+runs/*
+!runs/ppo_hover_baseline/
+!runs/ppo_hover_and_move/
+
+runs/ppo_hover_baseline/*
+!runs/ppo_hover_baseline/20260831_031226_seed42_4c8d9562/
+!runs/ppo_hover_baseline/20260831_122922_seed42_f787e5d1/
+
+runs/ppo_hover_and_move/*
+!runs/ppo_hover_and_move/20260901_230326_seed42_246d3c56/
+
+!runs/ppo_hover_baseline/20260831_031226_seed42_4c8d9562/**
+!runs/ppo_hover_baseline/20260831_122922_seed42_f787e5d1/**
+!runs/ppo_hover_and_move/20260901_230326_seed42_246d3c56/**
+
+# Exclude heavy per-step intermediate checkpoints and npz trajectory files
+runs/**/checkpoints/step_*.pt
+runs/**/*.npz
 
 .agents
 .codex
-

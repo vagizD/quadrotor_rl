@@ -37,6 +37,7 @@ OBSERVATION_ORDER = (
     "angular_velocity_body_x",
     "angular_velocity_body_y",
     "angular_velocity_body_z",
+    "hover_skill_gate",
 )
 
 
@@ -114,16 +115,16 @@ class HoverEnvironment:
         )
 
     @property
+    def state(self) -> QuadrotorState:
+        return self.quadrotor.state
+
+    @property
     def target_position(self) -> FloatVector:
         return self._target_position.copy()
 
     @property
     def target_heading(self) -> float:
         return self._target_heading
-
-    @property
-    def state(self) -> QuadrotorState:
-        return self.quadrotor.state
 
     @property
     def last_raw_cost(self) -> float:
@@ -134,13 +135,17 @@ class HoverEnvironment:
         return self._last_normalized_cost
 
     def get_observation(self) -> FloatVector:
-        # This order is the fixed environment-to-policy interface.
+        pos_err = self._target_position - self.state.position
+        dist = float(np.linalg.norm(pos_err))
+        # Non-linear Gaussian skill gate: 1.0 at target, 0.0 far away
+        hover_gate = np.exp(-(dist**2) / (2.0 * (0.30**2)))
         observation = np.concatenate(
             [
-                self._target_position - self.state.position,
+                pos_err,
                 self.state.velocity,
                 self.state.quaternion.as_array(),
                 self.state.angular_velocity,
+                np.array([hover_gate], dtype=np.float64),
             ]
         )
         if observation.shape != (self.observation_dim,):
@@ -176,21 +181,58 @@ class HoverEnvironment:
         heading_error = self._heading_error()
         hover_thrust = self.params.mass * self.params.gravity / QDIMS.motor_count
         thrust_deviation = self.quadrotor.thrusts - hover_thrust
-        # Position and heading terms pursue the target; the remaining terms stabilize it.
-        raw_cost = (
-            self.reward_config.position_error_weight
-            * np.dot(position_error, position_error)
+
+        # Skill-Gated Task-Conditioned Dual-Mode Reward:
+        hover_gate = float(
+            np.exp(
+                -(distance_to_target**2)
+                / (2.0 * (self.reward_config.hover_gate_distance_scale**2))
+            )
+        )
+
+        # Transit cost: linear distance penalty + soft allowed-tilt window penalty (zero penalty for tilt <= 30 deg)
+        tilt_excess = max(
+            0.0,
+            self.reward_config.transit_allowed_tilt_z - body_up_world[2],
+        )
+        transit_cost = (
+            self.reward_config.position_error_weight * distance_to_target
             + self.reward_config.linear_velocity_weight
-            * np.dot(self.state.velocity, self.state.velocity)
-            + self.reward_config.tilt_weight * (1.0 - body_up_world[2])
+            * float(np.dot(self.state.velocity, self.state.velocity))
+            + self.reward_config.tilt_weight * (tilt_excess**2)
             + self.reward_config.heading_weight * heading_error**2
-            + self.reward_config.angular_velocity_weight * np.dot(
+        )
+
+        mean_thrust = np.mean(self.quadrotor.thrusts)
+        thrust_asymmetry = self.quadrotor.thrusts - mean_thrust
+        thrust_asymmetry_cost = (
+            self.reward_config.hover_thrust_asymmetry_weight
+            * np.dot(thrust_asymmetry, thrust_asymmetry)
+        )
+
+        hover_cost = (
+            self.reward_config.position_error_weight * (distance_to_target**2)
+            + self.reward_config.heading_weight * heading_error**2
+            + (
+                self.reward_config.linear_velocity_weight
+                * self.reward_config.hover_velocity_multiplier
+            )
+            * np.dot(self.state.velocity, self.state.velocity)
+            + (
+                self.reward_config.angular_velocity_weight
+                * self.reward_config.hover_angular_velocity_multiplier
+            )
+            * np.dot(
                 self.state.angular_velocity,
                 self.state.angular_velocity,
             )
             + self.reward_config.thrust_deviation_weight
             * np.dot(thrust_deviation, thrust_deviation)
+            + thrust_asymmetry_cost
         )
+
+        raw_cost = (1.0 - hover_gate) * transit_cost + hover_gate * hover_cost
+
         # This monotone map uses the observed raw-cost scale without hard clipping.
         normalized_cost = self.reward_config.normalized_cost_limit * (-np.expm1(
             -raw_cost / self.reward_config.cost_normalization_scale

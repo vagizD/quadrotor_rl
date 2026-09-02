@@ -86,6 +86,8 @@ def _make_actor(config, checkpoint: dict[str, Any], device: torch.device) -> Act
         config.ppo.initial_log_std,
         config.ppo.min_log_std,
         config.ppo.max_log_std,
+        gated_dual_policy=config.ppo.gated_dual_policy,
+        transit_hidden_sizes=config.ppo.transit_hidden_sizes,
     ).to(device)
     actor.load_state_dict(checkpoint["actor"])
     actor.eval()

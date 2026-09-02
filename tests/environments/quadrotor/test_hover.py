@@ -149,7 +149,9 @@ def test_observation_has_frozen_order_and_target_to_state_error() -> None:
             7.0,
             8.0,
             9.0,
+            0.0,
         ],
+        atol=1e-6,
     )
     assert observation.shape == (environment.observation_dim,)
 
@@ -278,9 +280,7 @@ def test_terminal_penalty_applies_to_physical_failure_not_truncation() -> None:
     failure_reward = environment.compute_reward()
 
     assert environment.is_terminated()
-    raw_cost = environment.reward_config.position_error_weight * (
-        environment.max_position_error**2
-    )
+    raw_cost = environment.reward_config.position_error_weight * environment.max_position_error
     normalized_cost = environment.reward_config.normalized_cost_limit * (-np.expm1(
         -raw_cost / environment.reward_config.cost_normalization_scale
     ))
@@ -301,7 +301,11 @@ def test_truncation_penalty_ranks_final_distance_without_failure() -> None:
 
     assert not environment.is_terminated()
     assert environment.is_truncated()
-    raw_cost = environment.reward_config.position_error_weight
+    dist = 1.0
+    hover_gate = np.exp(-(dist**2) / (2.0 * (0.30**2)))
+    transit_cost = environment.reward_config.position_error_weight * dist
+    hover_cost = environment.reward_config.position_error_weight * (dist**2)
+    raw_cost = (1.0 - hover_gate) * transit_cost + hover_gate * hover_cost
     normalized_cost = environment.reward_config.normalized_cost_limit * (-np.expm1(
         -raw_cost / environment.reward_config.cost_normalization_scale
     ))
@@ -324,7 +328,11 @@ def test_cost_normalization_is_bounded_and_exposes_raw_cost() -> None:
     reward = environment.compute_reward()
 
     assert not environment.is_terminated()
-    raw_cost = 16.0
+    dist = 2.0
+    hover_gate = np.exp(-(dist**2) / (2.0 * (0.30**2)))
+    transit_cost = environment.reward_config.position_error_weight * dist
+    hover_cost = environment.reward_config.position_error_weight * (dist**2)
+    raw_cost = (1.0 - hover_gate) * transit_cost + hover_gate * hover_cost
     expected_normalized_cost = environment.reward_config.normalized_cost_limit * (
         -np.expm1(
             -raw_cost / environment.reward_config.cost_normalization_scale
