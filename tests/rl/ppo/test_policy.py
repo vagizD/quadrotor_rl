@@ -101,3 +101,28 @@ def test_actor_rejects_wrong_observation_dimension(dimension_offset: int) -> Non
 
     with pytest.raises(ValueError, match="last dimension"):
         actor(torch.zeros(bad_dimension))
+
+
+def test_gated_dual_policy_outputs_nominal_hover_thrust_at_origin() -> None:
+    actor = Actor(
+        observation_dim=14,
+        action_dim=4,
+        hidden_sizes=(128, 128),
+        initial_log_std=-3.0,
+        min_log_std=-4.0,
+        max_log_std=-1.0,
+        gated_dual_policy=True,
+    )
+    # At w_hover = 1.0 (origin), the gated dual policy should output 2.4525 N on all 4 motors
+    obs_at_origin = torch.zeros(14)
+    obs_at_origin[-1] = 1.0  # w_hover = 1.0
+
+    dist = actor.distribution(obs_at_origin, action_low=0.0, action_high=5.0)
+
+    assert dist.mean.shape == (4,)
+    torch.testing.assert_close(
+        dist.mean,
+        torch.full((4,), 2.4525),
+        rtol=1e-4,
+        atol=1e-4,
+    )

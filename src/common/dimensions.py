@@ -10,6 +10,7 @@ class QuadrotorDimensions:
     velocity_dim: int = 3
     quaternion_dim: int = 4
     angular_velocity_dim: int = 3
+    task_gate_dim: int = 1
     motor_count: int = 4
 
     def __post_init__(self) -> None:
@@ -18,6 +19,7 @@ class QuadrotorDimensions:
             "velocity_dim",
             "quaternion_dim",
             "angular_velocity_dim",
+            "task_gate_dim",
             "motor_count",
         ):
             value = getattr(self, name)
@@ -36,7 +38,7 @@ class QuadrotorDimensions:
 
     @property
     def observation_dim(self) -> int:
-        return self.state_dim
+        return self.state_dim + self.task_gate_dim
 
     @property
     def action_dim(self) -> int:

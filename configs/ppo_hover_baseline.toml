@@ -22,7 +22,7 @@ dt = 0.01
 integrator = "rk4"
 
 [dimensions]
-observation_dim = 13
+observation_dim = 14
 action_dim = 4
 
 [environment]

@@ -260,6 +260,11 @@ class RewardConfig:
     truncation_distance_scale: float
     cost_normalization_scale: float
     normalized_cost_limit: float
+    hover_gate_distance_scale: float = 0.30
+    transit_allowed_tilt_z: float = 0.866
+    hover_velocity_multiplier: float = 5.0
+    hover_angular_velocity_multiplier: float = 5.0
+    hover_thrust_asymmetry_weight: float = 5.0
 
     def __post_init__(self) -> None:
         for name in (
@@ -271,12 +276,23 @@ class RewardConfig:
             "angular_velocity_weight",
             "thrust_deviation_weight",
             "terminal_penalty",
+            "hover_gate_distance_scale",
+            "hover_velocity_multiplier",
+            "hover_angular_velocity_multiplier",
+            "hover_thrust_asymmetry_weight",
         ):
             object.__setattr__(
                 self,
                 name,
                 _nonnegative_weight(getattr(self, name), name),
             )
+        if not 0.0 <= self.transit_allowed_tilt_z <= 1.0:
+            raise ValueError("transit_allowed_tilt_z must be in [0.0, 1.0]")
+        object.__setattr__(
+            self,
+            "transit_allowed_tilt_z",
+            float(self.transit_allowed_tilt_z),
+        )
         object.__setattr__(
             self,
             "cost_normalization_scale",
@@ -398,6 +414,8 @@ class PPOConfig:
     normalization_epsilon: float
     reward_scale: float
     max_grad_norm: float
+    gated_dual_policy: bool = False
+    transit_hidden_sizes: tuple[int, ...] | None = None
 
     def __post_init__(self) -> None:
         hidden_sizes = tuple(self.hidden_sizes)
@@ -624,10 +642,25 @@ class ExperimentConfig:
                 "truncation_distance_scale": self.reward.truncation_distance_scale,
                 "cost_normalization_scale": self.reward.cost_normalization_scale,
                 "normalized_cost_limit": self.reward.normalized_cost_limit,
+                "hover_gate_distance_scale": self.reward.hover_gate_distance_scale,
+                "transit_allowed_tilt_z": self.reward.transit_allowed_tilt_z,
+                "hover_velocity_multiplier": self.reward.hover_velocity_multiplier,
+                "hover_angular_velocity_multiplier": (
+                    self.reward.hover_angular_velocity_multiplier
+                ),
+                "hover_thrust_asymmetry_weight": (
+                    self.reward.hover_thrust_asymmetry_weight
+                ),
             },
             "algorithm": {"name": self.algorithm},
             "ppo": {
+                "gated_dual_policy": self.ppo.gated_dual_policy,
                 "hidden_sizes": list(self.ppo.hidden_sizes),
+                "transit_hidden_sizes": (
+                    list(self.ppo.transit_hidden_sizes)
+                    if self.ppo.transit_hidden_sizes is not None
+                    else None
+                ),
                 "initial_log_std": self.ppo.initial_log_std,
                 "min_log_std": self.ppo.min_log_std,
                 "max_log_std": self.ppo.max_log_std,
@@ -669,9 +702,15 @@ def _require_mapping(value: object, name: str) -> Mapping[str, object]:
     return value
 
 
-def _check_keys(section: Mapping[str, object], name: str, required: set[str]) -> None:
+def _check_keys(
+    section: Mapping[str, object],
+    name: str,
+    required: set[str],
+    optional: set[str] | None = None,
+) -> None:
+    allowed = required if optional is None else (required | optional)
     missing = required - set(section)
-    unknown = set(section) - required
+    unknown = set(section) - allowed
     if missing or unknown:
         details = []
         if missing:
@@ -811,6 +850,13 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
             "cost_normalization_scale",
             "normalized_cost_limit",
         },
+        optional={
+            "hover_gate_distance_scale",
+            "transit_allowed_tilt_z",
+            "hover_velocity_multiplier",
+            "hover_angular_velocity_multiplier",
+            "hover_thrust_asymmetry_weight",
+        },
     )
     reward = RewardConfig(**reward_data)
     tracking_data = _require_mapping(raw["tracking"], "tracking")
@@ -866,6 +912,15 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
             "reward_scale",
             "max_grad_norm",
         },
+        optional={
+            "gated_dual_policy",
+            "transit_hidden_sizes",
+        },
+    )
+    transit_sizes = (
+        tuple(ppo_data["transit_hidden_sizes"])
+        if "transit_hidden_sizes" in ppo_data and ppo_data["transit_hidden_sizes"] is not None
+        else None
     )
     ppo = PPOConfig(
         hidden_sizes=tuple(ppo_data["hidden_sizes"]),
@@ -886,6 +941,8 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         normalization_epsilon=ppo_data["normalization_epsilon"],
         reward_scale=ppo_data["reward_scale"],
         max_grad_norm=ppo_data["max_grad_norm"],
+        gated_dual_policy=ppo_data.get("gated_dual_policy", False),
+        transit_hidden_sizes=transit_sizes,
     )
     return ExperimentConfig(
         name=experiment_data["name"],
@@ -919,6 +976,8 @@ def _toml_lines(section: str, values: Mapping[str, object]) -> list[str]:
     lines = [f"[{section}]"]
     nested: list[tuple[str, Mapping[str, object]]] = []
     for key, value in values.items():
+        if value is None:
+            continue
         if isinstance(value, Mapping):
             nested.append((key, value))
         else:

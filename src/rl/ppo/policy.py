@@ -52,6 +52,8 @@ class Actor(nn.Module):
         initial_log_std: float,
         min_log_std: float,
         max_log_std: float,
+        gated_dual_policy: bool = False,
+        transit_hidden_sizes: Sequence[int] | None = None,
     ) -> None:
         super().__init__()
         if min_log_std > max_log_std:
@@ -64,11 +66,38 @@ class Actor(nn.Module):
         self.action_dim = action_dim
         self.min_log_std = float(min_log_std)
         self.max_log_std = float(max_log_std)
-        self.mean_network = _build_mlp(
-            observation_dim,
-            action_dim,
-            hidden_sizes,
-        )
+        self.gated_dual_policy = gated_dual_policy
+
+        if self.gated_dual_policy:
+            transit_hidden = (
+                hidden_sizes
+                if transit_hidden_sizes is None
+                else transit_hidden_sizes
+            )
+            self.hover_network = _build_mlp(
+                observation_dim, action_dim, hidden_sizes
+            )
+            self.transit_network = _build_mlp(
+                observation_dim, action_dim, transit_hidden
+            )
+            # Initialize output biases of both subnetworks to exact nominal hover thrust (2.4525 N physical thrust) and weights to zero
+            hover_bias_unbounded = math.atanh((2.4525 - 2.5) / 2.5)
+            with torch.no_grad():
+                self.hover_network[-1].bias.fill_(hover_bias_unbounded)
+                self.hover_network[-1].weight.zero_()
+                self.transit_network[-1].bias.fill_(hover_bias_unbounded)
+                self.transit_network[-1].weight.zero_()
+        else:
+            self.mean_network = _build_mlp(
+                observation_dim,
+                action_dim,
+                hidden_sizes,
+            )
+            hover_bias_unbounded = math.atanh((2.4525 - 2.5) / 2.5)
+            with torch.no_grad():
+                self.mean_network[-1].bias.fill_(hover_bias_unbounded)
+                self.mean_network[-1].weight.zero_()
+
         self.log_std = nn.Parameter(
             torch.full((action_dim,), float(initial_log_std))
         )
@@ -85,6 +114,11 @@ class Actor(nn.Module):
 
     def forward(self, observation: Tensor) -> Tensor:
         observation = _validate_observation(observation, self.observation_dim)
+        if self.gated_dual_policy:
+            w_hover = observation[..., -1:]
+            mu_hover = self.hover_network(observation)
+            mu_transit = self.transit_network(observation)
+            return w_hover * mu_hover + (1.0 - w_hover) * mu_transit
         return self.mean_network(observation)
 
     def distribution(

@@ -32,7 +32,7 @@ def test_baseline_config_loads_into_validated_objects() -> None:
     assert config.simulation == SimulationConfig(dt=0.01, integrator="rk4")
     assert isinstance(config.environment, HoverEnvironmentConfig)
     assert isinstance(config.dimensions, DimensionsConfig)
-    assert config.dimensions.observation_dim == QDIMS.observation_dim
+    assert config.dimensions.observation_dim == 14
     assert config.dimensions.action_dim == QDIMS.action_dim
     assert isinstance(config.reward, RewardConfig)
     assert isinstance(config.ppo, PPOConfig)
