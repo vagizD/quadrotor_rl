@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from common.dimensions import QDIMS
+from geometry.common.dimensions import QDIMS
 from robots.quadrotor.motors import (
     compute_torque,
     compute_total_thrust,

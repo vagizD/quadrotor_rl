@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from common.dimensions import QDIMS
-from geometry.rotation import Quaternion
+from geometry.common.dimensions import QDIMS
+from geometry.math.rotation import Quaternion
 from robots.quadrotor.dynamics import (
     compute_angular_acceleration,
     compute_external_force_acceleration,

@@ -1,0 +1,45 @@
+[experiment]
+name = "px4_hover"
+seed = 42
+
+[quadrotor]
+mass = 1.0
+arm_length = 0.2
+inertia = [
+    [0.01, 0.0, 0.0],
+    [0.0, 0.01, 0.0],
+    [0.0, 0.0, 0.02],
+]
+yaw_torque_coefficient = 0.1
+max_thrust = 5.0
+gravity = 9.81
+motor_spin_directions = [1.0, -1.0, 1.0, -1.0]
+
+[simulation]
+dt = 0.01
+integrator = "rk4"
+
+[environment]
+target_position = [0.0, 0.0, 2.0]
+target_heading = 0.0
+episode_horizon = 10.0
+
+[px4]
+# Future PX4 specific config options can go here
+
+[disturbances]
+enable = true
+wind_constant_force = [1.5, 0.5, 0.0]
+wind_gust_amplitude = 2.0
+wind_noise_std = 0.2
+drag_linear_coeff = 0.2
+drag_angular_coeff = 0.05
+
+[residual_model]
+use_residual_controller = true
+model_path = "projects/models/residual_model.pt"
+train_epochs = 2000
+train_batch_size = 64
+train_learning_rate = 0.001
+train_state_noise_std = 0.05
+train_target_noise_std = 0.05

@@ -1,7 +1,7 @@
 import numpy as np
 
-from geometry.rotation import Quaternion
-from robots.quadrotor import Quadrotor, QuadrotorParams, QuadrotorState
+from geometry.math.rotation import Quaternion
+from robots.quadrotor import Quadrotor, QuadrotorParams, RigidBodyState
 
 
 def make_state(
@@ -9,8 +9,8 @@ def make_state(
     velocity: np.ndarray | None = None,
     quaternion: Quaternion | None = None,
     angular_velocity: np.ndarray | None = None,
-) -> QuadrotorState:
-    return QuadrotorState(
+) -> RigidBodyState:
+    return RigidBodyState(
         position=np.zeros(3) if position is None else position,
         velocity=np.zeros(3) if velocity is None else velocity,
         quaternion=Quaternion.identity() if quaternion is None else quaternion,
@@ -29,7 +29,7 @@ def make_params() -> QuadrotorParams:
 
 
 def make_quadrotor(
-    state: QuadrotorState | None = None,
+    state: RigidBodyState | None = None,
     params: QuadrotorParams | None = None,
     thrusts: np.ndarray | None = None,
 ) -> Quadrotor:
